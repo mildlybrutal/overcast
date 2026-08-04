@@ -133,29 +133,29 @@ flowchart TD
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Client as WebSocket Client
+    participant Client as WebSocket Client
     participant Sup as Actor Supervisor
-    participant Actor as MatchActor (match_id)
+    participant MA as MatchActor
     participant Redis as Redis Pub/Sub
 
     Client->>Sup: Connect /ws?match_id=123
-    alt MatchActor already active
-        Sup->>Actor: Route ClientJoin
-    else MatchActor not present
-        Sup->>Actor: Spawn MatchActor(123)
-        Actor->>Redis: Subscribe channel match:updates:123
-        Sup->>Actor: Route ClientJoin
+    alt Match actor exists
+        Sup->>MA: Route ClientJoin
+    else Match actor missing
+        Sup->>MA: Spawn MatchActor(123)
+        MA->>Redis: Subscribe channel match:updates:123
+        Sup->>MA: Route ClientJoin
     end
 
-    Redis-->>Actor: Publish live score update
-    Actor-->>Client: Broadcast payload to client connection pool
+    Redis-->>MA: Publish live score update
+    MA-->>Client: Broadcast payload to client connection pool
 
-    Client->>Actor: Client Disconnect
-    Actor->>Actor: Remaining clients == 0 ? Start idle timer (60s)
-    opt Idle timer expires with 0 clients
-        Actor->>Sup: Unregister Actor
-        Actor->>Redis: Unsubscribe Pub/Sub channel
-        Actor->>Actor: Self-Destruct
+    Client->>MA: Client Disconnect
+    MA->>MA: Check remaining client count
+    opt Idle timeout reached (0 clients)
+        MA->>Sup: Unregister actor
+        MA->>Redis: Unsubscribe channel
+        MA->>MA: Self-destruct
     end
 ```
 
