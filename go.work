@@ -1,0 +1,10 @@
+go 1.26.4
+
+use (
+	./gen
+	./internal/models
+	./services/api
+	./services/ingestion
+	./services/notification
+	./services/processing
+)

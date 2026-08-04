@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package cricket.v1;
+
+option go_package = "github.com/mildlybrutal/overcast/gen/cricket/v1;cricketv1";
+
+message MatchScore {
+  int32 r = 1;
+  int32 w = 2;
+  float o = 3;
+  string inning = 4;
+}
+
+message MatchData {
+  string id = 1;
+  string name = 2;
+  string status = 3;
+  string match_type = 4;
+  string venue = 5;
+  string date = 6;
+  string date_time_gmt = 7;
+  repeated string teams = 8;
+  repeated MatchScore score = 9;
+  string series_id = 10;
+  bool fantasy_enabled = 11;
+}
+
+message CricketAPIResponse {
+  repeated MatchData data = 1;
+  string status = 2;
+}
