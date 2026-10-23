@@ -2,7 +2,6 @@ package producer
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"time"
 
@@ -43,7 +42,7 @@ func (ie *IngestionEngine) Start(ctx context.Context) {
 		case <-ticker.C:
 			matches, err := ie.client.FetchLiveMatches()
 			if err != nil {
-				fmt.Println("Error in fetching matches", err)
+				log.Printf("Error fetching matches: %v", err)
 				continue
 			}
 
@@ -72,6 +71,10 @@ func (ie *IngestionEngine) Start(ctx context.Context) {
 					FantasyEnabled: match.FantasyEnabled,
 				}
 				payload, err := proto.Marshal(matchProto)
+				if err != nil {
+					log.Printf("Failed encoding match %s: %v", match.ID, err)
+					continue
+				}
 				err = ie.writer.WriteMessages(ctx, kafka.Message{
 					Key:   []byte(match.ID),
 					Value: payload,

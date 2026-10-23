@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -47,7 +48,8 @@ func (p *PostgresRepo) initSchema() error {
 	return err
 }
 
-func (p *PostgresRepo) UpsertMatch(match models.MatchData) error {
+// UpsertMatch is idempotent, so a redelivered Kafka message is harmless.
+func (p *PostgresRepo) UpsertMatch(ctx context.Context, match models.MatchData) error {
 	scoreJSON, err := json.Marshal(match.Score)
 	if err != nil {
 		return fmt.Errorf("failed marshaling score: %w", err)
@@ -62,7 +64,7 @@ func (p *PostgresRepo) UpsertMatch(match models.MatchData) error {
 			updated_at = CURRENT_TIMESTAMP;
 		`
 
-	_, err = p.db.Exec(query, match.ID, match.Name, match.Status, match.MatchType, match.Venue, scoreJSON)
+	_, err = p.db.ExecContext(ctx, query, match.ID, match.Name, match.Status, match.MatchType, match.Venue, scoreJSON)
 	return err
 }
 

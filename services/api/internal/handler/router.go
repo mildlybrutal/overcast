@@ -3,9 +3,13 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/mildlybrutal/overcast/services/api/internal/metrics"
 	"github.com/mildlybrutal/overcast/services/api/internal/repository"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type APIHandler struct {
@@ -19,7 +23,10 @@ func NewAPIHandler(repo *repository.APIRepository) *APIHandler {
 }
 
 func (h *APIHandler) RegisterRoutes(r *gin.Engine) {
+	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
+
 	r.Use(func(c *gin.Context) {
+		start := time.Now()
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type")
@@ -28,6 +35,11 @@ func (h *APIHandler) RegisterRoutes(r *gin.Engine) {
 			return
 		}
 		c.Next()
+		if c.FullPath() != "" {
+			duration := time.Since(start).Seconds()
+			metrics.HTTPRequestsTotal.WithLabelValues(c.FullPath(), strconv.Itoa(c.Writer.Status())).Inc()
+			metrics.HTTPRequestDuration.WithLabelValues(c.FullPath(), strconv.Itoa(c.Writer.Status())).Observe(duration)
+		}
 	})
 
 	v1 := r.Group("/api/v1")
@@ -60,6 +72,7 @@ func (h *APIHandler) GetMatchDetails(c *gin.Context) {
 	if err == nil && cachedData != "" {
 		var cachedJSON map[string]interface{}
 		if err := json.Unmarshal([]byte(cachedData), &cachedJSON); err == nil {
+			metrics.CacheHits.Inc()
 			c.JSON(http.StatusOK, gin.H{
 				"status": "success",
 				"source": "cache",
@@ -69,6 +82,7 @@ func (h *APIHandler) GetMatchDetails(c *gin.Context) {
 		}
 	}
 
+	metrics.CacheMisses.Inc()
 	match, err := h.repo.GetMatchFromDB(c.Request.Context(), matchID)
 
 	if err != nil {
@@ -81,6 +95,9 @@ func (h *APIHandler) GetMatchDetails(c *gin.Context) {
 
 		return
 	}
+
+	_ = h.repo.SetLiveMatchInCache(c.Request.Context(), match)
+
 	c.JSON(http.StatusOK, gin.H{
 		"status": "success",
 		"source": "database",
