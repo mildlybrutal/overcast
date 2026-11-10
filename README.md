@@ -29,6 +29,7 @@ Overcast is a distributed, high-throughput, low-latency real-time sports event p
   - [Prerequisites](#prerequisites)
   - [Environment Configuration](#environment-configuration)
   - [Running with Docker Compose](#running-with-docker-compose)
+  - [Deploying to Kubernetes (minikube / k3s)](#deploying-to-kubernetes-minikube--k3s)
   - [Running Microservices Standalone](#running-microservices-standalone)
 - [API and Streaming Specifications](#api-and-streaming-specifications)
   - [REST API Endpoints](#rest-api-endpoints)
@@ -40,7 +41,7 @@ Overcast is a distributed, high-throughput, low-latency real-time sports event p
 
 ## Overview
 
-Live sports data processing requires processing updates with minimal latency while guaranteeing consistency, scalability under high user concurrency, and reliability during third-party API rate limits or network degradation. Overcast satisfies these constraints using an event-driven Go microservice workspace backed by Apache Kafka, Redis, PostgreSQL, Protocol Buffers, WebSockets, Prometheus, and Grafana.
+Live sports data processing requires processing updates with minimal latency while guaranteeing consistency, scalability under high user concurrency, and reliability during third-party API rate limits or network degradation. Overcast satisfies these constraints using an event-driven Go microservice workspace backed by Apache Kafka, Redis, PostgreSQL, Protocol Buffers, WebSockets, Prometheus, and Grafana, and runs locally under either Docker Compose or Kubernetes.
 
 ---
 
@@ -285,6 +286,7 @@ overcast/
 ├── go.work.sum                # Go workspace checksum file
 ├── ONBOARDING.md              # System onboarding guide and codebase walkthrough
 ├── guide.md                   # Command reference for running local and Docker stacks
+├── k8s/                       # Kubernetes manifests (namespace, config, infra, services)
 ├── monitoring/                # Prometheus and Grafana provisioning
 │   ├── prometheus.yaml        # Prometheus scrape configurations
 │   └── grafana/
@@ -319,7 +321,7 @@ overcast/
 - **Web Framework**: Gin Web Framework
 - **WebSockets**: Gorilla WebSocket
 - **Monitoring & Observability**: Prometheus v2.51 & Grafana v10.4
-- **Containerization**: Docker & Docker Compose
+- **Containerization & Orchestration**: Docker, Docker Compose & Kubernetes (minikube / k3s)
 
 ---
 
@@ -365,6 +367,95 @@ To remove persistent database and cache volumes:
 ```bash
 docker compose down -v
 ```
+
+### Deploying to Kubernetes (minikube / k3s)
+
+The `k8s/` directory deploys the full stack (Kafka, PostgreSQL, Redis, and the four Go services) into an isolated `overcast` namespace. Files have numeric prefixes so that `kubectl apply -f k8s/`, which processes them alphabetically, creates the namespace, ConfigMap, and Secret before anything that depends on them.
+
+| File | Resources |
+| :--- | :--- |
+| `00-namespace.yaml` | `overcast` Namespace |
+| `01-configmap.yaml` | `overcast-config`: Kafka broker/topic/group, Redis address, Postgres host/port/db |
+| `02-secret.yaml` | `overcast-secrets`: Postgres user/password, `CRICKET_API_KEY` (dev-only values) |
+| `10-postgres.yaml` | PVC (1Gi) + Deployment + Service `postgres:5432` |
+| `11-redis.yaml` | Deployment + Service `redis:6379` |
+| `12-kafka.yaml` | Single-node KRaft Deployment + Service `kafka:9092` + Job that creates the `raw-match-events` topic |
+| `20-processing.yaml` | Deployment + Service `processing:8082` (metrics) |
+| `21-api.yaml` | Deployment + Service `api:8080` |
+| `22-notification.yaml` | Deployment + Service `notification:8081` |
+| `23-ingestion.yaml` | Deployment only (no network port, so no Service or probes) |
+
+Each Go service waits for its dependencies in an init container, gets its config through the ConfigMap and Secret, and, where it has an HTTP port, uses `/metrics` for readiness and liveness probes. `POSTGRES_CONN` is assembled from the Secret's credentials, so no password is stored in plain config.
+
+**1. Start a local cluster** (allow at least 4 GB of memory; Kafka alone requests ~768 MiB):
+
+```bash
+# minikube
+minikube start --memory=4096 --cpus=2
+
+# or k3s
+curl -sfL https://get.k3s.io | sh -
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+```
+
+**2. Build the service images** from the repository root. The manifests use `overcast/<service>:local` with `imagePullPolicy: IfNotPresent`, so no registry is needed:
+
+```bash
+# minikube: build straight into the cluster's image store
+for svc in api ingestion notification processing; do
+  minikube image build -t "overcast/${svc}:local" -f "services/${svc}/Dockerfile" .
+done
+
+# k3s: build with Docker, then import into k3s's containerd
+for svc in api ingestion notification processing; do
+  docker build -t "overcast/${svc}:local" -f "services/${svc}/Dockerfile" .
+  docker save "overcast/${svc}:local" | sudo k3s ctr images import -
+done
+```
+
+**3. Deploy the stack:**
+
+```bash
+kubectl apply -f k8s/
+kubectl -n overcast get pods -w
+```
+
+The first start takes a minute or two while Kafka boots; the `kafka-topic-init` Job retries until the broker is reachable. Once it's up, every pod should show `Running` and the Job `Completed`.
+
+**4. Set your CricAPI key.** `k8s/02-secret.yaml` ships a placeholder key, so ingestion runs but logs `API response status reported failure`. To set the real key without committing it:
+
+```bash
+kubectl -n overcast create secret generic overcast-secrets \
+  --from-literal=POSTGRES_USER=cricket_admin \
+  --from-literal=POSTGRES_PASSWORD=cricket_password \
+  --from-literal=CRICKET_API_KEY=<your-api-key> \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n overcast rollout restart deployment/ingestion
+```
+
+**5. Access the services** with port-forwarding:
+
+```bash
+kubectl -n overcast port-forward svc/api 8080:8080 &
+kubectl -n overcast port-forward svc/notification 8081:8081 &
+
+curl http://localhost:8080/api/v1/matches
+# WebSocket: ws://localhost:8081/ws?match_id=<id>
+```
+
+**6. Tear down:**
+
+```bash
+kubectl delete -f k8s/        # or: kubectl delete namespace overcast
+```
+
+Deleting the namespace also deletes the Postgres PersistentVolumeClaim and its data.
+
+> **Notes**
+> - The Secret holds local-development credentials only. Use a real secret manager for anything shared.
+> - To restrict WebSocket origins, uncomment `ALLOWED_ORIGINS` in `k8s/22-notification.yaml`.
+> - Prometheus and Grafana aren't part of the Kubernetes manifests yet. The Service names (`api`, `notification`, `processing`) match `monitoring/prometheus.yaml`, so they can be added later.
+> - Keep `ingestion` at one replica: each replica polls the external API on its own.
 
 ---
 

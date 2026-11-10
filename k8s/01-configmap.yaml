@@ -1,0 +1,17 @@
+# Shared, non-sensitive configuration consumed by the Go services via envFrom.
+# Hostnames are the in-namespace Service names defined in this directory.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: overcast-config
+  namespace: overcast
+  labels:
+    app.kubernetes.io/part-of: overcast
+data:
+  KAFKA_BROKER: "kafka:9092"
+  KAFKA_TOPIC: "raw-match-events"
+  KAFKA_GROUP_ID: "processing-group"
+  REDIS_ADDR: "redis:6379"
+  POSTGRES_HOST: "postgres"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "cricket_db"
